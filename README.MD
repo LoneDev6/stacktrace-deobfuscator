@@ -1,3 +1,3 @@
 # Running the program
 
-`python main.py `
+`python main.py`
