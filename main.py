@@ -46,7 +46,9 @@ def deobfuscate():
         messagebox.showwarning("No .map", "Select a .map file first.")
         return
     last_input = textbox.get("1.0", tk.END)
-    result, highlights = deobfuscate_stacktrace_highlight(last_input, mapping)
+    class_mapping = mapping[0]  # Use only classes mapping
+    method_ranges = mapping[1]
+    result, highlights = deobfuscate_stacktrace_highlight(last_input, class_mapping, method_ranges)
     last_output = result
     last_highlights = highlights
     if current_view == "input":
@@ -55,37 +57,26 @@ def deobfuscate():
         show_input()
     adjust_window_width()
 
-def deobfuscate_stacktrace_highlight(text, mapping):
+def deobfuscate_stacktrace_highlight(text, class_mapping, method_ranges=None):
     """
-    Like deobfuscate_stacktrace, but returns positions for highlighting.
+    Usa parser.deobfuscate_stacktrace per la deoffuscazione, poi calcola gli highlight.
     """
-    IGNORED_PREFIXES = (
-        "java.", "javax.", "sun.", "com.sun.", "jdk.", "org.bukkit.", "net.minecraft.",
-        "String", "Integer", "Boolean", "Double", "Float", "Long", "Short", "Byte", "Void"
-    )
-    pattern = re.compile(r'([a-zA-Z_][\w\.]*\w)')
+    output = deobfuscate_stacktrace(text, class_mapping, method_ranges)
     highlights = []
-    lines = []
-    current_index = 0
-    for line in text.splitlines(keepends=True):
-        def replace_match(match):
-            word = match.group(1)
-            if any(word.startswith(prefix) for prefix in IGNORED_PREFIXES):
-                return word
-            parts = word.split('.')
-            for i in range(len(parts), 0, -1):
-                candidate = '.'.join(parts[:i])
-                if candidate in mapping:
-                    replaced = mapping[candidate] + word[len(candidate):]
-                    # Calcola posizione per evidenziare
-                    start = f"{len(lines)+1}.{match.start()}"
-                    end = f"{len(lines)+1}.{match.start()+len(replaced)}"
-                    highlights.append((start, end))
-                    return replaced
-            return word
-        new_line = pattern.sub(replace_match, line)
-        lines.append(new_line)
-    return ''.join(lines), highlights
+
+    # Calculate highlights on changed parts
+    input_lines = text.splitlines(keepends=True)
+    output_lines = output.splitlines(keepends=True)
+    for idx, (in_line, out_line) in enumerate(zip(input_lines, output_lines)):
+        # Find the differences between in_line and out_line
+        if in_line != out_line:
+            # Highlight where the string changed
+            start = 0
+            while start < len(in_line) and start < len(out_line) and in_line[start] == out_line[start]:
+                start += 1
+            end = len(out_line)
+            highlights.append((f"{idx+1}.{start}", f"{idx+1}.{end}"))
+    return output, highlights
 
 def find_jar_name_from_stacktrace(text):
     """

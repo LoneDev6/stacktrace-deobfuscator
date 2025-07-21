@@ -8,55 +8,83 @@ IGNORED_PREFIXES = (
 
 def parse_map_file(path):
     """
-    Parses the mapping file and returns a dictionary mapping obfuscated names to original names.
+    Returns:
+    - class_mapping: dict mapping obfuscated class names to original class names
+    - method_ranges: dict mapping (obfuscated_class, obfuscated_method) to a list of tuples
     """
-    mapping = {}
+    class_mapping = {}
+    method_ranges = {}
+
+    current_class_obf = None
+    current_class_orig = None
+
     with open(path, "r", encoding="utf-8") as f:
-        current_class_obf = None
-        current_class_orig = None
         for line in f:
             line = line.rstrip()
             # Class mapping
             if '->' in line and line.strip().endswith(':'):
                 orig, obf = map(str.strip, line[:-1].split('->'))
-                mapping[obf] = orig
-                current_class_obf = obf
                 current_class_orig = orig
-            # Field/method mapping
-            elif '->' in line and not line.strip().endswith(':'):
-                parts = line.strip().split('->')
-                left = parts[0].strip()
-                right = parts[1].strip()
-                # Field/method without space (e.g. E)
-                if current_class_obf and right:
-                    mapping[f"{current_class_obf}.{right}"] = f"{current_class_orig}.{left.split()[-1]}"
-    return mapping
+                current_class_obf = obf
+                class_mapping[obf] = orig
+                continue
+            # Method mapping (ignore fields/variables)
+            if current_class_obf and ':' in line and '->' in line:
+                parts = line.strip().split(':', 2)
+                if len(parts) < 3:
+                    continue
+                try:
+                    start = int(parts[0])
+                    end = int(parts[1])
+                except ValueError:
+                    continue
+                rest = parts[2]
+                # Find the obfuscated method name after '->'
+                if '->' not in rest:
+                    continue
+                before_arrow, obf_name = rest.rsplit('->', 1)
+                obf_name = obf_name.strip()
+                # Get the real method name (before the parenthesis)
+                real_name = before_arrow.split('(')[0].split()[-1].strip()
+                # print(f"ADD: ({current_class_obf}, {obf_name}) -> {start}-{end}, {current_class_orig}.{real_name}\n")
+                key = (current_class_obf, obf_name)
+                value = (start, end, f"{current_class_orig}.{real_name}")
+                if key not in method_ranges:
+                    method_ranges[key] = []
+                method_ranges[key].append(value)
 
-def deobfuscate_stacktrace(text, mapping):
-    """
-    Replaces obfuscated names in the stacktrace with their original names using the mapping.
-    """
-    # Regex to find words like itemsadder.m.a, itemsadder.m.a.e, etc.
-    pattern = re.compile(r'([a-zA-Z_][\w\.]*\w)')
+    return class_mapping, method_ranges
 
-    def replace_match(match):
-        word = match.group(1)
-        # Ignore standard classes/methods
-        if any(word.startswith(prefix) for prefix in IGNORED_PREFIXES):
-            return word
-        # Try to find the longest matching mapping
-        parts = word.split('.')
-        for i in range(len(parts), 0, -1):
-            candidate = '.'.join(parts[:i])
-            if candidate in mapping:
-                return mapping[candidate] + word[len(candidate):]
-        return word
-
-    lines = []
+def deobfuscate_stacktrace(text, class_mapping, method_ranges):
+    output = []
+    stacktrace_pattern = re.compile(r'([\w\.\$]+)\.(\w+)\(SourceFile:(\d+)\)')
     for line in text.splitlines():
-        if '.' in line:
-            new_line = pattern.sub(replace_match, line)
-            lines.append(new_line)
-        else:
-            lines.append(line)
-    return '\n'.join(lines)
+        new_line = line
+        offset = 0
+        for match in stacktrace_pattern.finditer(line):
+            clazz, method, line_number = match.groups()
+            clazz = clazz.strip()
+            method = method.strip()
+            line_number = int(line_number)
+            print(f"TRACE: ({clazz}, {method}) at {line_number}")
+            candidates = []
+            for (cls, meth), ranges in method_ranges.items():
+                if cls == clazz and meth == method:
+                    for start, end, original in ranges:
+                        candidates.append((cls, meth, start, end, original))
+            print(f"  Candidates: {[f'{cls} {meth} {start}-{end}' for cls, meth, start, end, _ in candidates]}")
+            best_match = None
+            for cls, meth, start, end, original in candidates:
+                if start <= line_number <= end:
+                    best_match = original
+                    print(f"  MATCH: {cls}.{meth} -> {original} ({start}-{end})")
+                    break
+            if not best_match:
+                print(f"  NO MATCH for {clazz}.{method} at {line_number}")
+            if best_match:
+                start_idx = match.start() + offset
+                end_idx = match.start() + offset + len(f"{clazz}.{method}")
+                new_line = new_line[:start_idx] + best_match + new_line[end_idx:]
+                offset += len(best_match) - len(f"{clazz}.{method}")
+        output.append(new_line)
+    return '\n'.join(output)
